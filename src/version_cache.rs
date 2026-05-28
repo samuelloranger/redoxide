@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-const CACHE_PATH: &str = ".redoxide-version-cache.json";
+const CACHE_DIR: &str = "/var/cache/redoxide";
+const CACHE_PATH: &str = "/var/cache/redoxide/version.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionCache {
@@ -14,6 +15,10 @@ pub fn load() -> Option<VersionCache> {
 }
 
 pub fn save(protocol: i32, version: &str) {
+    if let Err(e) = std::fs::create_dir_all(CACHE_DIR) {
+        tracing::warn!("Could not create cache directory: {e}");
+        return;
+    }
     let cache = VersionCache { protocol, version: version.to_string() };
     match serde_json::to_string_pretty(&cache) {
         Ok(json) => {

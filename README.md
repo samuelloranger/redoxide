@@ -87,9 +87,13 @@ services:
     volumes:
       - ./config.toml:/config.toml:ro
       - ./server.properties:/server.properties:ro
+      - redoxide-cache:/var/cache/redoxide
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - homelab_network
+
+volumes:
+  redoxide-cache:
 
 networks:
   homelab_network:
@@ -113,16 +117,14 @@ docker compose up -d redoxide
 
 redoxide automatically detects the server's protocol version and version name by pinging it directly after it starts. The detected values are cached in `.redoxide-version-cache.json` and reloaded on startup — so even when the server is stopped, the server list shows the correct version from last time.
 
-The cache file must persist across container restarts. Mount it as a volume:
+The cache is stored at `/var/cache/redoxide/version.json` inside the container. Persist it across restarts using a named Docker volume — no manual setup required:
 
 ```yaml
 volumes:
-  - ./.redoxide-version-cache.json:/.redoxide-version-cache.json
+  redoxide-cache:/var/cache/redoxide
 ```
 
-Create an empty file before first run: `touch .redoxide-version-cache.json`
-
-The `protocol_version` and `version_name` fields in config are a last-resort fallback used only if the cache is empty and the server has never been probed. They can be set to any value — or left as placeholders — since they'll be overwritten on first boot.
+The `protocol_version` and `version_name` fields in config are a last-resort fallback used only if the cache is empty and the server has never been started. They can be set to any value — or left as the defaults — since they'll be overwritten on first boot.
 
 ## Building from source
 
