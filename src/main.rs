@@ -33,7 +33,16 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let shared = state::SharedState::new(config.clone(), docker);
-    shared.set_state(initial_state);
+    shared.set_state(initial_state.clone());
+
+    // If already running at startup, detect version immediately
+    if matches!(initial_state, state::ServerState::Running) {
+        let target = format!("{}:{}", config.target.host, config.target.port);
+        match proxy::probe_server_version(&target).await {
+            Some((protocol, version)) => shared.update_version_info(protocol, version).await,
+            None => tracing::warn!("Could not detect server version from {target}, using config values"),
+        }
+    }
 
     let listener = TcpListener::bind(&config.proxy.bind).await?;
     info!("Listening on {}", config.proxy.bind);

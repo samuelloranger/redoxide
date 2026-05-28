@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,11 +23,16 @@ pub struct SharedState {
     pub idle_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Guards the Stopped→Starting transition so only one login attempt triggers docker.start()
     pub start_mutex: Mutex<()>,
+    /// Protocol version detected by probing the real server — overrides config value once known
+    pub detected_protocol: AtomicI32,
+    /// Version name detected by probing the real server
+    pub detected_version: Mutex<Option<String>>,
 }
 
 impl SharedState {
     pub fn new(config: Config, docker: DockerClient) -> Arc<Self> {
         let (server_tx, _) = watch::channel(ServerState::Stopped);
+        let detected_protocol = AtomicI32::new(config.status.protocol_version);
         Arc::new(Self {
             config,
             server_tx,
@@ -35,6 +40,8 @@ impl SharedState {
             docker,
             idle_timer: Arc::new(Mutex::new(None)),
             start_mutex: Mutex::new(()),
+            detected_protocol,
+            detected_version: Mutex::new(None),
         })
     }
 
@@ -68,5 +75,21 @@ impl SharedState {
         if let Some(handle) = self.idle_timer.lock().await.take() {
             handle.abort();
         }
+    }
+
+    pub fn protocol_version(&self) -> i32 {
+        self.detected_protocol.load(Ordering::Relaxed)
+    }
+
+    pub async fn version_name(&self) -> String {
+        self.detected_version.lock().await
+            .clone()
+            .unwrap_or_else(|| self.config.status.version_name.clone())
+    }
+
+    pub async fn update_version_info(&self, protocol: i32, version: String) {
+        self.detected_protocol.store(protocol, Ordering::Relaxed);
+        *self.detected_version.lock().await = Some(version.clone());
+        tracing::info!(protocol, version, "Detected server version");
     }
 }

@@ -8,7 +8,8 @@ use tokio::net::TcpStream;
 use crate::protocol::handshake::{
     encode_handshake, encode_login_start, parse_handshake, parse_login_start, Handshake,
 };
-use crate::protocol::packet::{encode_packet, read_packet};
+use crate::protocol::packet::{encode_packet, encode_string, read_packet};
+use crate::protocol::varint::encode_varint;
 use crate::state::{ServerState, SharedState};
 use crate::status::{encode_login_disconnect, encode_login_plugin_request, encode_status_response};
 
@@ -68,7 +69,10 @@ where
         ServerState::Running => base_motd.clone(),
     };
 
-    let response = encode_status_response(&motd, &state.config.status, state.player_count() as i32);
+    let mut effective_status = state.config.status.clone();
+    effective_status.protocol_version = state.protocol_version();
+    effective_status.version_name = state.version_name().await;
+    let response = encode_status_response(&motd, &effective_status, state.player_count() as i32);
     writer.write_all(&response).await?;
 
     if let Ok((ping, raw)) = read_packet(reader).await {
@@ -128,7 +132,7 @@ where
     forward(reader, writer, handshake_raw, login_raw, state).await
 }
 
-async fn wait_for_server<R, W>(reader: &mut R, writer: &mut W, state: &SharedState) -> anyhow::Result<()>
+async fn wait_for_server<R, W>(reader: &mut R, writer: &mut W, state: &Arc<SharedState>) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -160,6 +164,14 @@ where
                 if TcpStream::connect(&target).await.is_ok() {
                     state.set_state(ServerState::Running);
                     tracing::info!("Server is up, forwarding connection");
+                    // Probe version info in background — don't block the waiting player
+                    let state_clone = state.clone();
+                    let target_clone = target.clone();
+                    tokio::spawn(async move {
+                        if let Some((protocol, version)) = probe_server_version(&target_clone).await {
+                            state_clone.update_version_info(protocol, version).await;
+                        }
+                    });
                     return Ok(());
                 }
             }
@@ -260,4 +272,47 @@ async fn schedule_idle_shutdown(state: Arc<SharedState>) {
     });
 
     *timer_guard = Some(handle);
+}
+
+/// Connect to the real server, send a status ping, and extract protocol version + version name.
+pub async fn probe_server_version(target: &str) -> Option<(i32, String)> {
+    use tokio::time::{timeout, Duration};
+
+    let result = timeout(Duration::from_secs(8), async {
+        let mut stream = TcpStream::connect(target).await?;
+
+        let host = target.split(':').next().unwrap_or("localhost");
+        let port: u16 = target.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(25565);
+
+        let mut hs_data = Vec::new();
+        hs_data.extend_from_slice(&encode_varint(0));
+        hs_data.extend_from_slice(&encode_string(host));
+        hs_data.extend_from_slice(&port.to_be_bytes());
+        hs_data.extend_from_slice(&encode_varint(1));
+        stream.write_all(&encode_packet(0x00, &hs_data)).await?;
+        stream.write_all(&encode_packet(0x00, &[])).await?;
+
+        // Read the status response packet using our proper framing
+        let (pkt, _) = read_packet(&mut stream).await?;
+        anyhow::ensure!(pkt.id == 0x00, "unexpected packet id {}", pkt.id);
+
+        // Packet data is a Minecraft String (varint length + UTF-8)
+        let mut cursor = std::io::Cursor::new(&pkt.data);
+        let json_len = crate::protocol::varint::read_varint_sync(&mut cursor)? as usize;
+        let json_start = cursor.position() as usize;
+        let json_bytes = pkt.data.get(json_start..json_start + json_len)
+            .context("json out of bounds")?;
+        let json: serde_json::Value = serde_json::from_slice(json_bytes)?;
+
+        let protocol = json["version"]["protocol"].as_i64().context("no protocol")? as i32;
+        let version = json["version"]["name"].as_str().context("no version")?.to_string();
+        anyhow::Ok((protocol, version))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(v)) => Some(v),
+        Ok(Err(e)) => { tracing::debug!("Version probe failed: {e:#}"); None }
+        Err(_) => { tracing::debug!("Version probe timed out"); None }
+    }
 }
