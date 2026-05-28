@@ -137,11 +137,11 @@ Requires Rust 1.75+.
 
 ## Docker image
 
-Pre-built multi-platform images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry on every version tag:
+Pre-built images (`linux/amd64`) are published to GitHub Container Registry on every version tag:
 
 ```
 ghcr.io/samuelloranger/redoxide:latest
-ghcr.io/samuelloranger/redoxide:v0.1.0
+ghcr.io/samuelloranger/redoxide:v0.1.1
 ghcr.io/samuelloranger/redoxide:0.1
 ```
 
