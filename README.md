@@ -44,10 +44,13 @@ startup_timeout_secs = 120           # disconnect client if server doesn't boot 
 idle_shutdown_secs = 600             # stop container N seconds after last player leaves
 
 [status]
-protocol_version = 775               # must match your server's Minecraft protocol version
+# protocol_version and version_name are auto-detected by probing the real server
+# and cached in .redoxide-version-cache.json — these are only used as a last
+# resort if the cache is empty (i.e. the server has never been started yet).
+protocol_version = 0
 max_players = 20
 online_motd = "§c🎉 §9§lMy Server§c! 🎉"
-version_name = "26.1.2"
+version_name = "unknown"
 # Optional: read max_players and online_motd directly from server.properties
 # server_properties = "/server.properties"
 ```
