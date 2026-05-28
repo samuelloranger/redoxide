@@ -1,0 +1,18 @@
+[proxy]
+bind = "0.0.0.0:25565"
+server_address = "forbidden.samlo.cloud"
+
+[target]
+host = "minecraft"
+port = 25565
+
+[docker]
+container_name = "minecraft-minecraft-1"
+startup_timeout_secs = 120
+idle_shutdown_secs = 600
+
+[status]
+protocol_version = 775
+max_players = 20
+online_motd = "§c🎉 §9§lForbidden Server§c! 🎉"
+version_name = "26.1.2"
