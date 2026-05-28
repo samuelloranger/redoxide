@@ -4,6 +4,7 @@ mod protocol;
 mod proxy;
 mod state;
 mod status;
+mod version_cache;
 
 use tokio::net::TcpListener;
 use tracing::info;
