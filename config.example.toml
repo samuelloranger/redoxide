@@ -12,7 +12,12 @@ startup_timeout_secs = 120
 idle_shutdown_secs = 600
 
 [status]
-protocol_version = 775
+# protocol_version and version_name are auto-detected by probing the real server
+# and cached in .redoxide-version-cache.json — these values are only used as a
+# last resort if the cache is empty (i.e. the server has never been started yet).
+protocol_version = 0
 max_players = 20
-online_motd = "§c🎉 §9§lForbidden Server§c! 🎉"
-version_name = "26.1.2"
+online_motd = "§c🎉 §9§lMy Server§c! 🎉"
+version_name = "unknown"
+# Optional: read max_players and online_motd directly from server.properties
+# server_properties = "/server.properties"
