@@ -2,7 +2,7 @@
 
 A lightweight Minecraft reverse proxy written in Rust that starts your server on demand when a player connects, and shuts it down automatically when everyone leaves.
 
-Built as a drop-in replacement for [Infrared v1](https://github.com/haveachin/infrared) with two key improvements:
+Built as a replacement for [Infrared v1](https://github.com/haveachin/infrared) with two key improvements:
 
 - **No manual retry** — the player's connection is held open while the server boots. They wait on the "Logging in..." screen and join seamlessly once it's ready.
 - **Ping never wakes the server** — only an actual login attempt starts the container. Server list refreshes don't trigger a boot.
