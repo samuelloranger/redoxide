@@ -108,7 +108,7 @@ docker compose up -d redoxide
 
 ## Protocol version reference
 
-Find your server's protocol number by pinging it directly, or look it up at [wiki.vg/Protocol_version_number](https://wiki.vg/Protocol_version_number).
+Find your server's protocol number by pinging it directly, or look it up at [minecraft.wiki](https://minecraft.wiki/w/Java_Edition_version_history).
 
 | Minecraft | Protocol |
 |---|---|
