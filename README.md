@@ -106,15 +106,20 @@ docker compose up -d redoxide
 |---|---|---|
 | `RUST_LOG` | `redoxide=info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 
-## Protocol version reference
+## Protocol version auto-detection
 
-Find your server's protocol number by pinging it directly, or look it up at [minecraft.wiki](https://minecraft.wiki/w/Java_Edition_version_history).
+redoxide automatically detects the server's protocol version and version name by pinging it directly after it starts. The detected values are cached in `.redoxide-version-cache.json` and reloaded on startup — so even when the server is stopped, the server list shows the correct version from last time.
 
-| Minecraft | Protocol |
-|---|---|
-| 1.21.4 | 769 |
-| 1.21.1 | 767 |
-| 26.1.2 | 775 |
+The cache file must persist across container restarts. Mount it as a volume:
+
+```yaml
+volumes:
+  - ./.redoxide-version-cache.json:/.redoxide-version-cache.json
+```
+
+Create an empty file before first run: `touch .redoxide-version-cache.json`
+
+The `protocol_version` and `version_name` fields in config are a last-resort fallback used only if the cache is empty and the server has never been probed. They can be set to any value — or left as placeholders — since they'll be overwritten on first boot.
 
 ## Building from source
 

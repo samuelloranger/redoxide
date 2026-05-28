@@ -32,7 +32,14 @@ pub struct SharedState {
 impl SharedState {
     pub fn new(config: Config, docker: DockerClient) -> Arc<Self> {
         let (server_tx, _) = watch::channel(ServerState::Stopped);
-        let detected_protocol = AtomicI32::new(config.status.protocol_version);
+        // Priority: cache > config fallback
+        let cached = crate::version_cache::load();
+        let initial_protocol = cached.as_ref()
+            .map(|c| c.protocol)
+            .unwrap_or(config.status.protocol_version);
+        let initial_version = cached.map(|c| c.version);
+
+        let detected_protocol = AtomicI32::new(initial_protocol);
         Arc::new(Self {
             config,
             server_tx,
@@ -41,7 +48,7 @@ impl SharedState {
             idle_timer: Arc::new(Mutex::new(None)),
             start_mutex: Mutex::new(()),
             detected_protocol,
-            detected_version: Mutex::new(None),
+            detected_version: Mutex::new(initial_version),
         })
     }
 
@@ -88,8 +95,15 @@ impl SharedState {
     }
 
     pub async fn update_version_info(&self, protocol: i32, version: String) {
+        let changed = self.detected_protocol.load(Ordering::Relaxed) != protocol
+            || self.detected_version.lock().await.as_deref() != Some(&version);
+
         self.detected_protocol.store(protocol, Ordering::Relaxed);
         *self.detected_version.lock().await = Some(version.clone());
         tracing::info!(protocol, version, "Detected server version");
+
+        if changed {
+            crate::version_cache::save(protocol, &version);
+        }
     }
 }

@@ -1,2 +1,3 @@
 /target
 config.toml
+.redoxide-version-cache.json
