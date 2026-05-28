@@ -45,6 +45,37 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Background task: sync container state every 15s to detect external start/stop
+    let sync_state = shared.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
+        interval.tick().await; // skip first immediate tick
+        loop {
+            interval.tick().await;
+            match sync_state.docker.is_running().await {
+                Ok(running) => {
+                    let current = sync_state.current_state();
+                    match (running, &current) {
+                        (false, state::ServerState::Running) => {
+                            tracing::warn!("Container stopped externally — updating state to Stopped");
+                            sync_state.set_state(state::ServerState::Stopped);
+                        }
+                        (true, state::ServerState::Stopped) => {
+                            tracing::info!("Container started externally — updating state to Running");
+                            sync_state.set_state(state::ServerState::Running);
+                            let target = format!("{}:{}", sync_state.config.target.host, sync_state.config.target.port);
+                            if let Some((protocol, version)) = proxy::probe_server_version(&target).await {
+                                sync_state.update_version_info(protocol, version).await;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(e) => tracing::debug!("State sync check failed: {e:#}"),
+            }
+        }
+    });
+
     let listener = TcpListener::bind(&config.proxy.bind).await?;
     info!("Listening on {}", config.proxy.bind);
 

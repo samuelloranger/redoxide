@@ -266,7 +266,8 @@ async fn schedule_idle_shutdown(state: Arc<SharedState>) {
 
         tracing::info!("Idle timeout reached, stopping container");
         state_for_timer.set_state(ServerState::Stopped);
-        if let Err(error) = state_for_timer.docker.stop().await {
+        let rcon = state_for_timer.config.rcon.as_ref();
+        if let Err(error) = state_for_timer.docker.stop(rcon).await {
             tracing::error!("Failed to stop container: {error:#}");
         }
     });

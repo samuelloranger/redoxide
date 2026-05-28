@@ -45,9 +45,9 @@ mod tests {
         StatusConfig {
             protocol_version: 769,
             max_players: 20,
-            offline_motd: "Offline".to_string(),
             online_motd: "Online".to_string(),
             version_name: "1.21.4".to_string(),
+            server_properties: None,
         }
     }
 

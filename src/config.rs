@@ -6,6 +6,9 @@ pub struct Config {
     pub target: TargetConfig,
     pub docker: DockerConfig,
     pub status: StatusConfig,
+    /// Optional RCON config — if set, redoxide sends /stop via RCON for graceful shutdown
+    #[serde(default)]
+    pub rcon: Option<RconConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -25,6 +28,13 @@ pub struct DockerConfig {
     pub container_name: String,
     pub startup_timeout_secs: u64,
     pub idle_shutdown_secs: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RconConfig {
+    pub host: String,
+    pub port: u16,
+    pub password: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -52,6 +62,11 @@ fn apply_server_properties(config: &mut Config, path: &str) {
         tracing::warn!("Could not read server.properties at {path}");
         return;
     };
+
+    let mut rcon_enabled = false;
+    let mut rcon_port: u16 = 25575;
+    let mut rcon_password = String::new();
+
     for line in contents.lines() {
         let line = line.trim();
         if line.starts_with('#') || line.is_empty() { continue; }
@@ -68,9 +83,21 @@ fn apply_server_properties(config: &mut Config, path: &str) {
                     tracing::info!("server.properties: motd={motd}");
                     config.status.online_motd = motd;
                 }
+                "enable-rcon" => { rcon_enabled = value.trim() == "true"; }
+                "rcon.port" => { rcon_port = value.trim().parse().unwrap_or(25575); }
+                "rcon.password" => { rcon_password = value.trim().to_string(); }
                 _ => {}
             }
         }
+    }
+
+    if rcon_enabled && !rcon_password.is_empty() && config.rcon.is_none() {
+        tracing::info!("server.properties: RCON enabled on port {rcon_port}");
+        config.rcon = Some(RconConfig {
+            host: config.target.host.clone(),
+            port: rcon_port,
+            password: rcon_password,
+        });
     }
 }
 
@@ -85,6 +112,6 @@ mod tests {
         assert_eq!(config.target.port, 25565);
         assert_eq!(config.docker.startup_timeout_secs, 120);
         assert_eq!(config.docker.idle_shutdown_secs, 600);
-        assert_eq!(config.status.protocol_version, 769);
+        assert_eq!(config.status.protocol_version, 0);
     }
 }

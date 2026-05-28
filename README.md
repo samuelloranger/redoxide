@@ -113,6 +113,25 @@ docker compose up -d redoxide
 |---|---|---|
 | `RUST_LOG` | `redoxide=info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 
+## Graceful shutdown (RCON)
+
+By default redoxide stops the container with `docker stop`. If you configure RCON, it sends a `/stop` command to the server first, waits for it to shut down cleanly (saving chunks and player data), and only force-stops if the server doesn't exit within 30 seconds.
+
+If `server_properties` is mounted and `enable-rcon=true` is set in it, RCON is configured automatically — no extra config needed.
+
+To configure manually:
+
+```toml
+[rcon]
+host = "minecraft"
+port = 25575
+password = "your-rcon-password"
+```
+
+## External start/stop detection
+
+redoxide polls the container state every 15 seconds. If the container is stopped externally (e.g. `docker stop minecraft`) it updates its internal state immediately so the server list reflects reality. If the container is started externally it detects that too and probes the version.
+
 ## Protocol version auto-detection
 
 redoxide automatically detects the server's protocol version and version name by pinging it directly after it starts. The detected values are cached in `.redoxide-version-cache.json` and reloaded on startup — so even when the server is stopped, the server list shows the correct version from last time.
