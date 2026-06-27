@@ -1,4 +1,9 @@
+<p align="center">
+  <img src="logo.png" width="120" alt="redoxide logo">
+</p>
+
 # redoxide
+
 
 A lightweight Minecraft reverse proxy written in Rust that starts your server on demand when a player connects, and shuts it down automatically when everyone leaves.
 

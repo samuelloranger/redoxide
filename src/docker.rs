@@ -13,7 +13,7 @@ pub struct DockerClient {
 
 impl DockerClient {
     pub fn new(container_name: String) -> anyhow::Result<Self> {
-        let client = Docker::connect_with_unix_defaults()?;
+        let client = Docker::connect_with_defaults()?;
         Ok(Self { client, container_name })
     }
 
