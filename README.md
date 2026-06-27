@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="logo.png" width="120" alt="redoxide logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo.png">
+    <img src="logo-light.png" width="120" alt="redoxide logo">
+  </picture>
 </p>
 
 # redoxide
