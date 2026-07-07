@@ -69,7 +69,9 @@ fn apply_server_properties(config: &mut Config, path: &str) {
 
     for line in contents.lines() {
         let line = line.trim();
-        if line.starts_with('#') || line.is_empty() { continue; }
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
         if let Some((key, value)) = line.split_once('=') {
             match key.trim() {
                 "max-players" => {
@@ -83,9 +85,15 @@ fn apply_server_properties(config: &mut Config, path: &str) {
                     tracing::info!("server.properties: motd={motd}");
                     config.status.online_motd = motd;
                 }
-                "enable-rcon" => { rcon_enabled = value.trim() == "true"; }
-                "rcon.port" => { rcon_port = value.trim().parse().unwrap_or(25575); }
-                "rcon.password" => { rcon_password = value.trim().to_string(); }
+                "enable-rcon" => {
+                    rcon_enabled = value.trim() == "true";
+                }
+                "rcon.port" => {
+                    rcon_port = value.trim().parse().unwrap_or(25575);
+                }
+                "rcon.password" => {
+                    rcon_password = value.trim().to_string();
+                }
                 _ => {}
             }
         }

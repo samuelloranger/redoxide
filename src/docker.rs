@@ -14,11 +14,15 @@ pub struct DockerClient {
 impl DockerClient {
     pub fn new(container_name: String) -> anyhow::Result<Self> {
         let client = Docker::connect_with_defaults()?;
-        Ok(Self { client, container_name })
+        Ok(Self {
+            client,
+            container_name,
+        })
     }
 
     pub async fn is_running(&self) -> anyhow::Result<bool> {
-        let info = self.client
+        let info = self
+            .client
             .inspect_container(&self.container_name, None::<InspectContainerOptions>)
             .await?;
         Ok(info.state.and_then(|s| s.running).unwrap_or(false))
@@ -75,13 +79,18 @@ async fn rcon_stop(cfg: &RconConfig) -> anyhow::Result<()> {
         let (id, _type, _) = rcon_recv(&mut stream).await?;
         anyhow::ensure!(id != -1, "RCON authentication failed");
 
-        rcon_send(&mut stream, 2, 2, "stop").await?;        // Command
+        rcon_send(&mut stream, 2, 2, "stop").await?; // Command
         anyhow::Ok(())
     })
     .await?
 }
 
-async fn rcon_send(stream: &mut TcpStream, id: i32, pkt_type: i32, payload: &str) -> anyhow::Result<()> {
+async fn rcon_send(
+    stream: &mut TcpStream,
+    id: i32,
+    pkt_type: i32,
+    payload: &str,
+) -> anyhow::Result<()> {
     let payload_bytes = payload.as_bytes();
     let length = (4 + 4 + payload_bytes.len() + 2) as i32; // id + type + payload + 2 null bytes
     let mut buf = Vec::with_capacity(4 + length as usize);

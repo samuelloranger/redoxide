@@ -19,7 +19,10 @@ pub fn save(protocol: i32, version: &str) {
         tracing::warn!("Could not create cache directory: {e}");
         return;
     }
-    let cache = VersionCache { protocol, version: version.to_string() };
+    let cache = VersionCache {
+        protocol,
+        version: version.to_string(),
+    };
     match serde_json::to_string_pretty(&cache) {
         Ok(json) => {
             if let Err(e) = std::fs::write(CACHE_PATH, json) {
