@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -65,7 +64,7 @@ where
     let base_motd = &state.config.status.online_motd;
     let motd = match state.current_state() {
         ServerState::Stopped => base_motd.clone(),
-        ServerState::Starting(_) => format!("{base_motd} §7(starting...)"),
+        ServerState::Starting => format!("{base_motd} §7(starting...)"),
         ServerState::Running => base_motd.clone(),
     };
 
@@ -111,7 +110,7 @@ where
     {
         let _guard = state.start_mutex.lock().await;
         if matches!(state.current_state(), ServerState::Stopped) {
-            state.set_state(ServerState::Starting(Instant::now()));
+            state.set_state(ServerState::Starting);
             let state_clone = state.clone();
             tokio::spawn(async move {
                 if let Err(error) = state_clone.docker.start().await {
@@ -132,7 +131,11 @@ where
     forward(reader, writer, handshake_raw, login_raw, state).await
 }
 
-async fn wait_for_server<R, W>(reader: &mut R, writer: &mut W, state: &Arc<SharedState>) -> anyhow::Result<()>
+async fn wait_for_server<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    state: &Arc<SharedState>,
+) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -283,7 +286,11 @@ pub async fn probe_server_version(target: &str) -> Option<(i32, String)> {
         let mut stream = TcpStream::connect(target).await?;
 
         let host = target.split(':').next().unwrap_or("localhost");
-        let port: u16 = target.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(25565);
+        let port: u16 = target
+            .split(':')
+            .nth(1)
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(25565);
 
         let mut hs_data = Vec::new();
         hs_data.extend_from_slice(&encode_varint(0));
@@ -301,19 +308,32 @@ pub async fn probe_server_version(target: &str) -> Option<(i32, String)> {
         let mut cursor = std::io::Cursor::new(&pkt.data);
         let json_len = crate::protocol::varint::read_varint_sync(&mut cursor)? as usize;
         let json_start = cursor.position() as usize;
-        let json_bytes = pkt.data.get(json_start..json_start + json_len)
+        let json_bytes = pkt
+            .data
+            .get(json_start..json_start + json_len)
             .context("json out of bounds")?;
         let json: serde_json::Value = serde_json::from_slice(json_bytes)?;
 
-        let protocol = json["version"]["protocol"].as_i64().context("no protocol")? as i32;
-        let version = json["version"]["name"].as_str().context("no version")?.to_string();
+        let protocol = json["version"]["protocol"]
+            .as_i64()
+            .context("no protocol")? as i32;
+        let version = json["version"]["name"]
+            .as_str()
+            .context("no version")?
+            .to_string();
         anyhow::Ok((protocol, version))
     })
     .await;
 
     match result {
         Ok(Ok(v)) => Some(v),
-        Ok(Err(e)) => { tracing::debug!("Version probe failed: {e:#}"); None }
-        Err(_) => { tracing::debug!("Version probe timed out"); None }
+        Ok(Err(e)) => {
+            tracing::debug!("Version probe failed: {e:#}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("Version probe timed out");
+            None
+        }
     }
 }

@@ -41,7 +41,9 @@ async fn main() -> anyhow::Result<()> {
         let target = format!("{}:{}", config.target.host, config.target.port);
         match proxy::probe_server_version(&target).await {
             Some((protocol, version)) => shared.update_version_info(protocol, version).await,
-            None => tracing::warn!("Could not detect server version from {target}, using config values"),
+            None => {
+                tracing::warn!("Could not detect server version from {target}, using config values")
+            }
         }
     }
 
@@ -57,14 +59,23 @@ async fn main() -> anyhow::Result<()> {
                     let current = sync_state.current_state();
                     match (running, &current) {
                         (false, state::ServerState::Running) => {
-                            tracing::warn!("Container stopped externally — updating state to Stopped");
+                            tracing::warn!(
+                                "Container stopped externally — updating state to Stopped"
+                            );
                             sync_state.set_state(state::ServerState::Stopped);
                         }
                         (true, state::ServerState::Stopped) => {
-                            tracing::info!("Container started externally — updating state to Running");
+                            tracing::info!(
+                                "Container started externally — updating state to Running"
+                            );
                             sync_state.set_state(state::ServerState::Running);
-                            let target = format!("{}:{}", sync_state.config.target.host, sync_state.config.target.port);
-                            if let Some((protocol, version)) = proxy::probe_server_version(&target).await {
+                            let target = format!(
+                                "{}:{}",
+                                sync_state.config.target.host, sync_state.config.target.port
+                            );
+                            if let Some((protocol, version)) =
+                                proxy::probe_server_version(&target).await
+                            {
                                 sync_state.update_version_info(protocol, version).await;
                             }
                         }

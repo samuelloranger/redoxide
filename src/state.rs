@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
@@ -11,7 +10,7 @@ use crate::docker::DockerClient;
 #[derive(Clone, Debug)]
 pub enum ServerState {
     Stopped,
-    Starting(Instant),
+    Starting,
     Running,
 }
 
@@ -34,7 +33,8 @@ impl SharedState {
         let (server_tx, _) = watch::channel(ServerState::Stopped);
         // Priority: cache > config fallback
         let cached = crate::version_cache::load();
-        let initial_protocol = cached.as_ref()
+        let initial_protocol = cached
+            .as_ref()
             .map(|c| c.protocol)
             .unwrap_or(config.status.protocol_version);
         let initial_version = cached.map(|c| c.version);
@@ -69,9 +69,12 @@ impl SharedState {
     }
 
     pub fn remove_player(&self) -> usize {
-        self.player_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-            Some(n.saturating_sub(1))
-        }).unwrap_or(0).saturating_sub(1)
+        self.player_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.saturating_sub(1))
+            })
+            .unwrap_or(0)
+            .saturating_sub(1)
     }
 
     pub fn player_count(&self) -> usize {
@@ -89,7 +92,9 @@ impl SharedState {
     }
 
     pub async fn version_name(&self) -> String {
-        self.detected_version.lock().await
+        self.detected_version
+            .lock()
+            .await
             .clone()
             .unwrap_or_else(|| self.config.status.version_name.clone())
     }

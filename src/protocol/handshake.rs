@@ -42,7 +42,10 @@ pub fn parse_login_start(data: &[u8]) -> anyhow::Result<LoginStart> {
     let username = read_string_sync(&mut cursor)?;
     let mut uuid_bytes = [0u8; 16];
     cursor.read_exact(&mut uuid_bytes)?;
-    Ok(LoginStart { username, uuid_bytes })
+    Ok(LoginStart {
+        username,
+        uuid_bytes,
+    })
 }
 
 pub fn encode_handshake(handshake: &Handshake) -> Vec<u8> {
@@ -104,7 +107,10 @@ mod tests {
     #[test]
     fn test_login_start_encode_round_trip() {
         let uuid = [0xABu8; 16];
-        let original = LoginStart { username: "Steve".to_string(), uuid_bytes: uuid };
+        let original = LoginStart {
+            username: "Steve".to_string(),
+            uuid_bytes: uuid,
+        };
         let encoded = encode_login_start(&original);
         let decoded = parse_login_start(&encoded).unwrap();
         assert_eq!(decoded.username, original.username);
