@@ -8,7 +8,7 @@
 <h1 align="center">redoxide</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" />
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/samuelloranger/redoxide" alt="License: MIT" /></a>
   <a href="https://github.com/samuelloranger/redoxide/releases"><img src="https://img.shields.io/github/v/release/samuelloranger/redoxide" alt="Latest release" /></a>
   <a href="https://github.com/samuelloranger/redoxide/actions/workflows/docker.yml"><img src="https://github.com/samuelloranger/redoxide/actions/workflows/docker.yml/badge.svg" alt="Docker build" /></a>
   <a href="https://github.com/samuelloranger/redoxide/pkgs/container/redoxide"><img src="https://img.shields.io/badge/ghcr.io-redoxide-2496ED?logo=docker&logoColor=white" alt="Container image" /></a>
@@ -180,4 +180,4 @@ ghcr.io/samuelloranger/redoxide:0.1
 
 ## License
 
-MIT
+[MIT](./LICENSE)
