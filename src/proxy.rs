@@ -5,9 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
-use crate::protocol::handshake::{
-    encode_handshake, encode_login_start, parse_handshake, parse_login_start, Handshake,
-};
+use crate::protocol::handshake::{parse_handshake, parse_login_start, Handshake};
 use crate::protocol::packet::{encode_packet, encode_string, read_packet};
 use crate::protocol::varint::encode_varint;
 use crate::state::{ServerState, SharedState};
@@ -23,7 +21,7 @@ async fn handle_connection_inner(stream: TcpStream, state: Arc<SharedState>) -> 
     let (mut reader, mut writer) = stream.into_split();
     let hello_timeout = Duration::from_secs(state.config.proxy.handshake_timeout_secs);
 
-    let (handshake_packet, _) = timeout(hello_timeout, read_packet(&mut reader))
+    let (handshake_packet, handshake_raw) = timeout(hello_timeout, read_packet(&mut reader))
         .await
         .context("timed out reading handshake")??;
     let handshake = parse_handshake(&handshake_packet.data).context("parsing handshake")?;
@@ -40,7 +38,7 @@ async fn handle_connection_inner(stream: TcpStream, state: Arc<SharedState>) -> 
 
     match handshake.next_state {
         1 => handle_ping(&mut reader, &mut writer, &state).await,
-        2 => handle_login(reader, writer, handshake, state).await,
+        2 => handle_login(reader, writer, handshake, handshake_raw, state).await,
         next_state => anyhow::bail!("Unknown next_state: {next_state}"),
     }
 }
@@ -89,6 +87,7 @@ async fn handle_login<R, W>(
     mut reader: R,
     mut writer: W,
     handshake: Handshake,
+    handshake_raw: Vec<u8>,
     state: Arc<SharedState>,
 ) -> anyhow::Result<()>
 where
@@ -96,7 +95,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let hello_timeout = Duration::from_secs(state.config.proxy.handshake_timeout_secs);
-    let (login_start_packet, _) = timeout(hello_timeout, read_packet(&mut reader))
+    let (login_start_packet, login_raw) = timeout(hello_timeout, read_packet(&mut reader))
         .await
         .context("timed out reading login start")??;
     anyhow::ensure!(
@@ -104,9 +103,13 @@ where
         "Expected login start packet, got {}",
         login_start_packet.id
     );
-    let login_start = parse_login_start(&login_start_packet.data).context("parsing login start")?;
+    let username = parse_login_start(&login_start_packet.data).context("parsing login start")?;
 
-    tracing::info!(username = %login_start.username, "Login attempt");
+    tracing::info!(
+        username = %username,
+        protocol = handshake.protocol_version,
+        "Login attempt"
+    );
     state.cancel_idle_shutdown().await;
 
     // Atomic Stopped→Starting: hold the lock while checking and transitioning
@@ -129,9 +132,6 @@ where
         wait_for_server(&mut reader, &mut writer, &state).await?;
     }
 
-    let handshake_raw = encode_packet(0x00, &encode_handshake(&handshake));
-    let login_raw = encode_packet(0x00, &encode_login_start(&login_start));
-
     forward(reader, writer, handshake_raw, login_raw, state).await
 }
 
@@ -144,7 +144,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    use tokio::time::{interval, Duration};
+    use tokio::time::interval;
 
     let deadline =
         std::time::Instant::now() + Duration::from_secs(state.config.docker.startup_timeout_secs);
@@ -189,8 +189,25 @@ where
                 keepalive_id += 1;
             }
             changed = state_rx.changed() => {
-                if changed.is_ok() && matches!(*state_rx.borrow(), ServerState::Running) {
-                    return Ok(());
+                match changed {
+                    Ok(()) => {
+                        // Clone out of the borrow before awaiting below — a
+                        // held `watch::Ref` isn't `Send` across an `.await`.
+                        let current = state_rx.borrow().clone();
+                        match current {
+                            ServerState::Running => return Ok(()),
+                            ServerState::Stopped => {
+                                let _ = writer
+                                    .write_all(&encode_login_disconnect(
+                                        "Server failed to start. Contact admin.",
+                                    ))
+                                    .await;
+                                anyhow::bail!("Server start failed");
+                            }
+                            ServerState::Starting => {}
+                        }
+                    }
+                    Err(_) => anyhow::bail!("State channel closed"),
                 }
             }
             // Drain Login Plugin Responses (and any other client packets) so they
@@ -225,7 +242,6 @@ where
     server_writer.write_all(&handshake_raw).await?;
     server_writer.write_all(&login_raw).await?;
 
-    state.add_player();
     tracing::info!(players = state.player_count(), "Player joined");
 
     // Run both copy directions concurrently. When either side closes (client
@@ -242,51 +258,15 @@ where
         },
     );
 
-    let remaining = state.remove_player();
-    tracing::info!(players = remaining, "Player left");
-
-    if remaining == 0 {
-        schedule_idle_shutdown(state).await;
-    }
-
     result?;
     Ok(())
 }
 
-async fn schedule_idle_shutdown(state: Arc<SharedState>) {
-    use tokio::time::Duration;
-
-    let mut timer_guard = state.idle_timer.lock().await;
-    if let Some(handle) = timer_guard.take() {
-        handle.abort();
-    }
-
-    let secs = state.config.docker.idle_shutdown_secs;
-    tracing::info!(secs, "Scheduling idle shutdown");
-
-    let state_for_timer = state.clone();
-    let handle = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(secs)).await;
-        if state_for_timer.player_count() > 0 {
-            return;
-        }
-
-        tracing::info!("Idle timeout reached, stopping container");
-        state_for_timer.set_state(ServerState::Stopped);
-        let rcon = state_for_timer.config.rcon.as_ref();
-        if let Err(error) = state_for_timer.docker.stop(rcon).await {
-            tracing::error!("Failed to stop container: {error:#}");
-        }
-    });
-
-    *timer_guard = Some(handle);
-}
-
 /// Connect to the real server, send a status ping, and extract protocol version + version name.
 pub async fn probe_server_version(target: &str) -> Option<(i32, String)> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::timeout as probe_timeout;
 
-    let result = timeout(Duration::from_secs(8), async {
+    let result = probe_timeout(Duration::from_secs(8), async {
         let mut stream = TcpStream::connect(target).await?;
 
         let host = target.split(':').next().unwrap_or("localhost");
