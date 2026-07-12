@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 
 use crate::protocol::handshake::{
     encode_handshake, encode_login_start, parse_handshake, parse_login_start, Handshake,
@@ -20,10 +21,11 @@ pub async fn handle_connection(stream: TcpStream, state: Arc<SharedState>) {
 
 async fn handle_connection_inner(stream: TcpStream, state: Arc<SharedState>) -> anyhow::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
+    let hello_timeout = Duration::from_secs(state.config.proxy.handshake_timeout_secs);
 
-    let (handshake_packet, _) = read_packet(&mut reader)
+    let (handshake_packet, _) = timeout(hello_timeout, read_packet(&mut reader))
         .await
-        .context("reading handshake")?;
+        .context("timed out reading handshake")??;
     let handshake = parse_handshake(&handshake_packet.data).context("parsing handshake")?;
 
     let expected = state.config.proxy.server_address.to_lowercase();
@@ -52,9 +54,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let (status_request, _) = read_packet(reader)
+    let hello_timeout = Duration::from_secs(state.config.proxy.handshake_timeout_secs);
+    let (status_request, _) = timeout(hello_timeout, read_packet(reader))
         .await
-        .context("reading status request")?;
+        .context("timed out reading status request")??;
     anyhow::ensure!(
         status_request.id == 0x00,
         "Expected status request packet, got {}",
@@ -92,9 +95,10 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (login_start_packet, _) = read_packet(&mut reader)
+    let hello_timeout = Duration::from_secs(state.config.proxy.handshake_timeout_secs);
+    let (login_start_packet, _) = timeout(hello_timeout, read_packet(&mut reader))
         .await
-        .context("reading login start")?;
+        .context("timed out reading login start")??;
     anyhow::ensure!(
         login_start_packet.id == 0x00,
         "Expected login start packet, got {}",
