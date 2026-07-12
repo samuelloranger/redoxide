@@ -43,9 +43,9 @@ pub fn parse_login_start(data: &[u8]) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::packet::encode_string;
     use super::super::varint::encode_varint;
+    use super::*;
 
     fn make_handshake_bytes(protocol: i32, addr: &str, port: u16, state: i32) -> Vec<u8> {
         let mut data = Vec::new();
