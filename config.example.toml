@@ -1,6 +1,9 @@
 [proxy]
 bind = "0.0.0.0:25565"
 server_address = "forbidden.samlo.cloud"
+# Optional: seconds to wait for handshake/status/login-start before dropping
+# an idle/slow connection. Defaults to 10 if omitted.
+# handshake_timeout_secs = 10
 
 [target]
 host = "minecraft"
