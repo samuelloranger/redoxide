@@ -111,6 +111,10 @@ where
         "Login attempt"
     );
     state.cancel_idle_shutdown().await;
+    // Held for the rest of this function, including the call into forward()
+    // below — covers "client disconnects mid-boot" and "client disconnects
+    // after joining" with the same mechanism (see SessionGuard's doc comment).
+    let _session = state.begin_session();
 
     // Atomic Stopped→Starting: hold the lock while checking and transitioning
     // so concurrent logins don't both spawn docker.start().
