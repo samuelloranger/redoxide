@@ -5,7 +5,6 @@ use super::varint::read_varint_sync;
 pub struct Handshake {
     pub protocol_version: i32,
     pub server_address: String,
-    pub server_port: u16,
     pub next_state: i32,
 }
 
@@ -17,15 +16,17 @@ pub fn parse_handshake(data: &[u8]) -> anyhow::Result<Handshake> {
     let raw_address = read_string_sync(&mut cursor)?;
     let server_address = raw_address.split('\0').next().unwrap_or("").to_string();
 
+    // Port is part of the wire format but redoxide doesn't need it: hostname
+    // validation and routing don't depend on it, and the raw handshake bytes
+    // (port included) are what get forwarded to the backend. Consume it to
+    // keep the cursor aligned for next_state.
     let mut port_bytes = [0u8; 2];
     cursor.read_exact(&mut port_bytes)?;
-    let server_port = u16::from_be_bytes(port_bytes);
     let next_state = read_varint_sync(&mut cursor)?;
 
     Ok(Handshake {
         protocol_version,
         server_address,
-        server_port,
         next_state,
     })
 }
@@ -62,7 +63,6 @@ mod tests {
         let hs = parse_handshake(&data).unwrap();
         assert_eq!(hs.protocol_version, 769);
         assert_eq!(hs.server_address, "forbidden.samlo.cloud");
-        assert_eq!(hs.server_port, 25565);
         assert_eq!(hs.next_state, 2);
     }
 
