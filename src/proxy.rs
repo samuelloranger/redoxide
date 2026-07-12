@@ -325,3 +325,166 @@ pub async fn probe_server_version(target: &str) -> Option<(i32, String)> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, DockerConfig, ProxyConfig, StatusConfig, TargetConfig};
+    use crate::docker::DockerClient;
+    use tokio::net::TcpListener;
+
+    fn test_config(startup_timeout_secs: u64) -> Config {
+        Config {
+            proxy: ProxyConfig {
+                bind: "0.0.0.0:0".to_string(),
+                server_address: "test".to_string(),
+                handshake_timeout_secs: 10,
+            },
+            target: TargetConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            docker: DockerConfig {
+                container_name: "redoxide-test-nonexistent-container".to_string(),
+                startup_timeout_secs,
+                idle_shutdown_secs: 0,
+            },
+            status: StatusConfig {
+                protocol_version: 0,
+                max_players: 20,
+                online_motd: "test".to_string(),
+                version_name: "test".to_string(),
+                server_properties: None,
+            },
+            rcon: None,
+        }
+    }
+
+    fn test_state(startup_timeout_secs: u64) -> Arc<SharedState> {
+        let docker = DockerClient::new("redoxide-test-nonexistent-container".to_string()).unwrap();
+        SharedState::new(test_config(startup_timeout_secs), docker)
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_server_bails_immediately_when_state_goes_stopped() {
+        // Long startup_timeout_secs — if the fix regresses, this test would
+        // hang for the full timeout instead of returning promptly.
+        let state = test_state(120);
+        state.set_state(ServerState::Starting);
+
+        let (mut client_side, server_side) = tokio::io::duplex(4096);
+        let (mut server_reader, mut server_writer) = tokio::io::split(server_side);
+
+        // Simulate the spawned docker.start() task failing shortly after boot begins.
+        let state_for_failure = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            state_for_failure.set_state(ServerState::Stopped);
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_for_server(&mut server_reader, &mut server_writer, &state),
+        )
+        .await
+        .expect("wait_for_server must return well before the 120s startup timeout");
+
+        assert!(
+            result.is_err(),
+            "wait_for_server must fail when the server start fails"
+        );
+
+        // A disconnect packet should have been written to the client side.
+        let mut buf = [0u8; 1];
+        let read_result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::io::AsyncReadExt::read(&mut client_side, &mut buf),
+        )
+        .await;
+        assert!(
+            matches!(read_result, Ok(Ok(n)) if n > 0),
+            "client should receive a disconnect packet, not silence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_abandoned_session_schedules_idle_shutdown() {
+        // idle_shutdown_secs = 0 so the scheduled timer resolves almost
+        // immediately once armed, letting the test observe it without a
+        // real sleep.
+        let state = test_state(120);
+        state.set_state(ServerState::Starting);
+
+        {
+            // Simulates handle_login's `let _session = state.begin_session();`
+            // followed by the client disconnecting before forward() is ever
+            // reached (wait_for_server returning Err, or any other early exit).
+            let _session = state.begin_session();
+            assert_eq!(state.player_count(), 1);
+        }
+        // Guard dropped without ever calling forward()/add_player() again —
+        // this is the exact "abandoned during boot" scenario from finding #2.
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            state.player_count(),
+            0,
+            "player count must drop even though forward() was never reached"
+        );
+
+        // Give the spawned schedule_idle_shutdown + its 0s sleep a moment to run.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            state.idle_timer.lock().await.is_some(),
+            "an idle shutdown must have been scheduled for the abandoned session"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_real_backend_forward_still_works_end_to_end() {
+        // Sanity check that the raw-forwarding change (Task 2) and the
+        // session-guard change (Task 3) didn't break the happy path: spin up
+        // a fake backend that echoes whatever it receives, then confirm
+        // forward() relays the handshake+login bytes to it and streams the
+        // response back to the client. Drive it with an in-memory duplex
+        // whose other end this test controls directly.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 5];
+            tokio::io::AsyncReadExt::read_exact(&mut socket, &mut buf)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut socket, &buf)
+                .await
+                .unwrap();
+        });
+
+        let mut state_config = test_config(120);
+        state_config.target.host = backend_addr.ip().to_string();
+        state_config.target.port = backend_addr.port();
+        let docker = DockerClient::new("redoxide-test-nonexistent-container".to_string()).unwrap();
+        let state = SharedState::new(state_config, docker);
+
+        let (client_conn, mut test_harness) = tokio::io::duplex(4096);
+        let (client_reader, client_writer) = tokio::io::split(client_conn);
+
+        let forward_handle = tokio::spawn(forward(
+            client_reader,
+            client_writer,
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            state,
+        ));
+
+        let mut echoed = [0u8; 5];
+        tokio::io::AsyncReadExt::read_exact(&mut test_harness, &mut echoed)
+            .await
+            .unwrap();
+        assert_eq!(&echoed, b"hello");
+
+        drop(test_harness);
+        let _ = forward_handle.await.unwrap();
+    }
+}
