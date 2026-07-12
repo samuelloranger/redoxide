@@ -38,7 +38,7 @@ Server state is shared across all concurrent connections via a `tokio::sync::wat
 
 - Docker (with socket access at `/var/run/docker.sock`)
 - The Minecraft container must exist in a stopped state — create it without starting: `docker compose up --no-start minecraft`
-- Minecraft 1.13+ (uses Login Plugin Request packets as keepalives; non-issue for any modern server)
+- Minecraft 1.13+ — the proxy forwards the client's original handshake and Login Start packets byte-for-byte (it only *reads* the username and target address; it never reconstructs the packet), so it works across all protocol versions' differing Login Start layouts and passes modded (Forge/Fabric) handshake markers through untouched.
 
 ## Configuration
 
