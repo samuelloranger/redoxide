@@ -12,14 +12,18 @@ pub enum ServerState {
     Stopped,
     Starting,
     Running,
+    /// Idle-shutdown is in flight: an RCON `/stop` and/or `docker stop` is
+    /// executing. Distinct from `Running` so a login arriving during this
+    /// window doesn't get forwarded into a container that's shutting down.
+    Stopping,
 }
 
 pub struct SharedState {
     pub config: Config,
     pub server_tx: watch::Sender<ServerState>,
-    pub player_count: Arc<AtomicUsize>,
+    pub player_count: AtomicUsize,
     pub docker: DockerClient,
-    pub idle_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
+    pub idle_timer: Mutex<Option<JoinHandle<()>>>,
     /// Guards the Stopped→Starting transition so only one login attempt triggers docker.start()
     pub start_mutex: Mutex<()>,
     /// Protocol version detected by probing the real server — overrides config value once known
@@ -43,9 +47,9 @@ impl SharedState {
         Arc::new(Self {
             config,
             server_tx,
-            player_count: Arc::new(AtomicUsize::new(0)),
+            player_count: AtomicUsize::new(0),
             docker,
-            idle_timer: Arc::new(Mutex::new(None)),
+            idle_timer: Mutex::new(None),
             start_mutex: Mutex::new(()),
             detected_protocol,
             detected_version: Mutex::new(initial_version),
@@ -64,11 +68,11 @@ impl SharedState {
         self.server_tx.subscribe()
     }
 
-    pub fn add_player(&self) -> usize {
+    fn add_player(&self) -> usize {
         self.player_count.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    pub fn remove_player(&self) -> usize {
+    fn remove_player(&self) -> usize {
         self.player_count
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 Some(n.saturating_sub(1))
@@ -82,6 +86,13 @@ impl SharedState {
     }
 
     pub async fn cancel_idle_shutdown(&self) {
+        if matches!(self.current_state(), ServerState::Stopping) {
+            // A stop is already in flight (RCON /stop may already be sent).
+            // Aborting mid-shutdown would leave the container in an unknown
+            // state; let it finish instead. Callers that need to know when
+            // it's safe to proceed should wait for state to leave Stopping.
+            return;
+        }
         if let Some(handle) = self.idle_timer.lock().await.take() {
             handle.abort();
         }
@@ -110,5 +121,185 @@ impl SharedState {
         if changed {
             crate::version_cache::save(protocol, &version);
         }
+    }
+
+    /// Marks the start of a login attempt: the connection counts toward
+    /// `player_count` (and thus "is anyone here" idle-shutdown decisions,
+    /// and the status-ping online count) from this point on — whether it's
+    /// still waiting for the container to boot or already forwarding
+    /// traffic. Held for the entire lifetime of the connection; dropping it
+    /// (on success, error, or panic — RAII, so every exit path is covered)
+    /// decrements the count and, if this was the last session, arms the
+    /// idle-shutdown timer. This closes the gap where a client that
+    /// disconnects mid-boot left the container running with nothing
+    /// scheduled to stop it.
+    pub fn begin_session(self: &Arc<Self>) -> SessionGuard {
+        self.add_player();
+        SessionGuard {
+            state: self.clone(),
+        }
+    }
+
+    /// (Re)arms the idle-shutdown timer, replacing any previous one. Only
+    /// publishes `ServerState::Stopped` after `docker.stop()` actually
+    /// succeeds — on failure the state is left as-is so redoxide doesn't
+    /// report the server offline while the container is still running.
+    pub async fn schedule_idle_shutdown(self: &Arc<Self>) {
+        use tokio::time::Duration;
+
+        let mut timer_guard = self.idle_timer.lock().await;
+        if let Some(handle) = timer_guard.take() {
+            handle.abort();
+        }
+
+        let secs = self.config.docker.idle_shutdown_secs;
+        tracing::info!(secs, "Scheduling idle shutdown");
+
+        let state_for_timer = self.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            if state_for_timer.player_count() > 0 {
+                return;
+            }
+
+            tracing::info!("Idle timeout reached, stopping container");
+            // Mark Stopping before the stop attempt starts (not after it
+            // succeeds) so a login arriving during the stop sees a state
+            // other than Running and waits instead of being forwarded into
+            // a container that's shutting down.
+            state_for_timer.set_state(ServerState::Stopping);
+            let rcon = state_for_timer.config.rcon.as_ref();
+            match state_for_timer.docker.stop(rcon).await {
+                Ok(()) => state_for_timer.set_state(ServerState::Stopped),
+                Err(error) => {
+                    tracing::error!("Failed to stop container: {error:#}");
+                    // Stop failed — the container is presumably still up.
+                    // Revert to Running so a waiting login proceeds
+                    // immediately instead of being stuck behind Stopping
+                    // forever (the periodic external-state sync in main.rs
+                    // will correct this if the container did exit anyway).
+                    state_for_timer.set_state(ServerState::Running);
+                }
+            }
+        });
+
+        *timer_guard = Some(handle);
+    }
+}
+
+pub struct SessionGuard {
+    state: Arc<SharedState>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let remaining = self.state.remove_player();
+        tracing::info!(players = remaining, "Session ended");
+        if remaining == 0 {
+            let state = self.state.clone();
+            tokio::spawn(async move {
+                state.schedule_idle_shutdown().await;
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DockerConfig, ProxyConfig, StatusConfig, TargetConfig};
+    use crate::docker::DockerClient;
+
+    fn test_config() -> Config {
+        Config {
+            proxy: ProxyConfig {
+                bind: "0.0.0.0:0".to_string(),
+                server_address: "test".to_string(),
+                handshake_timeout_secs: 10,
+            },
+            target: TargetConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            docker: DockerConfig {
+                // Use a container name that cannot exist so docker.start()/stop()
+                // return a deterministic Err without needing a live Minecraft
+                // container — only a reachable Docker daemon (present by default
+                // on GitHub Actions ubuntu-latest runners).
+                container_name: "redoxide-test-nonexistent-container".to_string(),
+                startup_timeout_secs: 120,
+                idle_shutdown_secs: 0,
+            },
+            status: StatusConfig {
+                protocol_version: 0,
+                max_players: 20,
+                online_motd: "test".to_string(),
+                version_name: "test".to_string(),
+                server_properties: None,
+            },
+            rcon: None,
+        }
+    }
+
+    fn test_state() -> Arc<SharedState> {
+        let docker = DockerClient::new("redoxide-test-nonexistent-container".to_string()).unwrap();
+        SharedState::new(test_config(), docker)
+    }
+
+    #[tokio::test]
+    async fn test_begin_session_increments_and_drop_decrements_player_count() {
+        let state = test_state();
+        assert_eq!(state.player_count(), 0);
+
+        let guard = state.begin_session();
+        assert_eq!(state.player_count(), 1);
+
+        drop(guard);
+        // Drop spawns an async task to decrement + reschedule; give it a tick.
+        tokio::task::yield_now().await;
+        assert_eq!(state.player_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stop_failure_reverts_to_running_not_stopped() {
+        let state = test_state();
+        state.set_state(ServerState::Running);
+
+        // idle_shutdown_secs = 0 in test_config, so this resolves almost
+        // immediately. The container name doesn't exist, so docker.stop()
+        // is guaranteed to fail.
+        state.schedule_idle_shutdown().await;
+
+        // Wait for the spawned timer task to run past the sleep(0) and the
+        // failed stop attempt.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        assert!(
+            matches!(state.current_state(), ServerState::Running),
+            "a failed stop must revert to Running, not stay Stopped or Stopping — \
+             a waiting login must not be stuck behind a stop that already failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_idle_shutdown_does_not_abort_in_flight_stop() {
+        let state = test_state();
+        state.set_state(ServerState::Stopping);
+
+        // Simulate a stop already in flight: install a timer handle for a
+        // long-running task, then confirm cancel_idle_shutdown leaves it
+        // alone (does not abort) while state is Stopping.
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        *state.idle_timer.lock().await = Some(handle);
+
+        state.cancel_idle_shutdown().await;
+
+        let guard = state.idle_timer.lock().await;
+        assert!(
+            guard.as_ref().is_some_and(|h| !h.is_finished()),
+            "cancel_idle_shutdown must not abort a stop already in progress"
+        );
     }
 }

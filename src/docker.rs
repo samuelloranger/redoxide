@@ -68,6 +68,10 @@ impl DockerClient {
 
 // ── RCON protocol ─────────────────────────────────────────────────────────────
 
+/// Source RCON spec caps the response body at 4096 bytes; add slack for the
+/// 8-byte id+type header plus 2 null terminators already counted in `length`.
+const MAX_RCON_PACKET_LEN: usize = 4096 + 10;
+
 async fn rcon_stop(cfg: &RconConfig) -> anyhow::Result<()> {
     use tokio::time::{timeout, Duration};
 
@@ -85,8 +89,8 @@ async fn rcon_stop(cfg: &RconConfig) -> anyhow::Result<()> {
     .await?
 }
 
-async fn rcon_send(
-    stream: &mut TcpStream,
+async fn rcon_send<S: AsyncWriteExt + Unpin>(
+    stream: &mut S,
     id: i32,
     pkt_type: i32,
     payload: &str,
@@ -103,10 +107,16 @@ async fn rcon_send(
     Ok(())
 }
 
-async fn rcon_recv(stream: &mut TcpStream) -> anyhow::Result<(i32, i32, String)> {
+async fn rcon_recv<S: AsyncReadExt + Unpin>(stream: &mut S) -> anyhow::Result<(i32, i32, String)> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
-    let length = i32::from_le_bytes(len_buf) as usize;
+    let raw_length = i32::from_le_bytes(len_buf);
+    anyhow::ensure!(raw_length >= 0, "negative RCON packet length: {raw_length}");
+    let length = raw_length as usize;
+    anyhow::ensure!(
+        length <= MAX_RCON_PACKET_LEN,
+        "RCON packet length {length} exceeds max {MAX_RCON_PACKET_LEN}"
+    );
 
     let mut body = vec![0u8; length];
     stream.read_exact(&mut body).await?;
@@ -115,4 +125,37 @@ async fn rcon_recv(stream: &mut TcpStream) -> anyhow::Result<(i32, i32, String)>
     let pkt_type = i32::from_le_bytes(body[4..8].try_into()?);
     let payload = String::from_utf8_lossy(&body[8..body.len().saturating_sub(2)]).to_string();
     Ok((id, pkt_type, payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rcon_send_recv_round_trip() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        rcon_send(&mut client, 7, 2, "stop").await.unwrap();
+
+        let (id, pkt_type, payload) = rcon_recv(&mut server).await.unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(pkt_type, 2);
+        assert_eq!(payload, "stop");
+    }
+
+    #[tokio::test]
+    async fn test_rcon_recv_rejects_negative_length() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        client.write_all(&(-1i32).to_le_bytes()).await.unwrap();
+        let result = rcon_recv(&mut server).await;
+        assert!(result.is_err(), "negative RCON length must be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_rcon_recv_rejects_oversized_length() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let too_big = (MAX_RCON_PACKET_LEN + 1) as i32;
+        client.write_all(&too_big.to_le_bytes()).await.unwrap();
+        let result = rcon_recv(&mut server).await;
+        assert!(result.is_err(), "oversized RCON length must be rejected");
+    }
 }

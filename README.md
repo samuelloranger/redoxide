@@ -38,7 +38,7 @@ Server state is shared across all concurrent connections via a `tokio::sync::wat
 
 - Docker (with socket access at `/var/run/docker.sock`)
 - The Minecraft container must exist in a stopped state — create it without starting: `docker compose up --no-start minecraft`
-- Minecraft 1.13+ (uses Login Plugin Request packets as keepalives; non-issue for any modern server)
+- Minecraft 1.13+ — the proxy forwards the client's original handshake and Login Start packets byte-for-byte (it only *reads* the username and target address; it never reconstructs the packet), so it works across all protocol versions' differing Login Start layouts and passes modded (Forge/Fabric) handshake markers through untouched.
 
 ## Configuration
 
@@ -149,7 +149,7 @@ redoxide polls the container state every 15 seconds. If the container is stopped
 
 ## Protocol version auto-detection
 
-redoxide automatically detects the server's protocol version and version name by pinging it directly after it starts. The detected values are cached in `.redoxide-version-cache.json` and reloaded on startup — so even when the server is stopped, the server list shows the correct version from last time.
+redoxide automatically detects the server's protocol version and version name by pinging it directly after it starts. The detected values are cached at `/var/cache/redoxide/version.json` inside the container and reloaded on startup — so even when the server is stopped, the server list shows the correct version from last time.
 
 The cache is stored at `/var/cache/redoxide/version.json` inside the container. Persist it across restarts using a named Docker volume — no manual setup required:
 
@@ -167,7 +167,7 @@ cargo build --release
 # Binary at target/release/redoxide
 ```
 
-Requires Rust 1.75+.
+Requires Rust 1.88+ (enforced in CI).
 
 ## Docker image
 
