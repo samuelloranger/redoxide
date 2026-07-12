@@ -11,10 +11,19 @@ pub struct Config {
     pub rcon: Option<RconConfig>,
 }
 
+fn default_handshake_timeout_secs() -> u64 {
+    10
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProxyConfig {
     pub bind: String,
     pub server_address: String,
+    /// Max seconds to wait for the client's handshake/status/login-start
+    /// packets before dropping the connection. Does not apply once the
+    /// connection is forwarded to the backend.
+    #[serde(default = "default_handshake_timeout_secs")]
+    pub handshake_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -121,5 +130,11 @@ mod tests {
         assert_eq!(config.docker.startup_timeout_secs, 120);
         assert_eq!(config.docker.idle_shutdown_secs, 600);
         assert_eq!(config.status.protocol_version, 0);
+    }
+
+    #[test]
+    fn test_handshake_timeout_defaults_when_absent() {
+        let config = load("config.example.toml").unwrap();
+        assert_eq!(config.proxy.handshake_timeout_secs, 10);
     }
 }

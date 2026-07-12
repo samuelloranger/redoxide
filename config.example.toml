@@ -1,6 +1,9 @@
 [proxy]
 bind = "0.0.0.0:25565"
 server_address = "forbidden.samlo.cloud"
+# Optional: seconds to wait for handshake/status/login-start before dropping
+# an idle/slow connection. Defaults to 10 if omitted.
+# handshake_timeout_secs = 10
 
 [target]
 host = "minecraft"
@@ -20,8 +23,9 @@ idle_shutdown_secs = 600
 
 [status]
 # protocol_version and version_name are auto-detected by probing the real server
-# and cached in .redoxide-version-cache.json — these values are only used as a
-# last resort if the cache is empty (i.e. the server has never been started yet).
+# and cached at /var/cache/redoxide/version.json — these values are only used
+# as a last resort if the cache is empty (i.e. the server has never been
+# started yet).
 protocol_version = 0
 max_players = 20
 online_motd = "§c🎉 §9§lMy Server§c! 🎉"
