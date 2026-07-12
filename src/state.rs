@@ -12,6 +12,10 @@ pub enum ServerState {
     Stopped,
     Starting,
     Running,
+    /// Idle-shutdown is in flight: an RCON `/stop` and/or `docker stop` is
+    /// executing. Distinct from `Running` so a login arriving during this
+    /// window doesn't get forwarded into a container that's shutting down.
+    Stopping,
 }
 
 pub struct SharedState {
@@ -82,6 +86,13 @@ impl SharedState {
     }
 
     pub async fn cancel_idle_shutdown(&self) {
+        if matches!(self.current_state(), ServerState::Stopping) {
+            // A stop is already in flight (RCON /stop may already be sent).
+            // Aborting mid-shutdown would leave the container in an unknown
+            // state; let it finish instead. Callers that need to know when
+            // it's safe to proceed should wait for state to leave Stopping.
+            return;
+        }
         if let Some(handle) = self.idle_timer.lock().await.take() {
             handle.abort();
         }
@@ -152,10 +163,23 @@ impl SharedState {
             }
 
             tracing::info!("Idle timeout reached, stopping container");
+            // Mark Stopping before the stop attempt starts (not after it
+            // succeeds) so a login arriving during the stop sees a state
+            // other than Running and waits instead of being forwarded into
+            // a container that's shutting down.
+            state_for_timer.set_state(ServerState::Stopping);
             let rcon = state_for_timer.config.rcon.as_ref();
             match state_for_timer.docker.stop(rcon).await {
                 Ok(()) => state_for_timer.set_state(ServerState::Stopped),
-                Err(error) => tracing::error!("Failed to stop container: {error:#}"),
+                Err(error) => {
+                    tracing::error!("Failed to stop container: {error:#}");
+                    // Stop failed — the container is presumably still up.
+                    // Revert to Running so a waiting login proceeds
+                    // immediately instead of being stuck behind Stopping
+                    // forever (the periodic external-state sync in main.rs
+                    // will correct this if the container did exit anyway).
+                    state_for_timer.set_state(ServerState::Running);
+                }
             }
         });
 
@@ -237,7 +261,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stop_failure_does_not_publish_stopped_state() {
+    async fn test_stop_failure_reverts_to_running_not_stopped() {
         let state = test_state();
         state.set_state(ServerState::Running);
 
@@ -251,8 +275,31 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         assert!(
-            !matches!(state.current_state(), ServerState::Stopped),
-            "state must not become Stopped when docker.stop() fails"
+            matches!(state.current_state(), ServerState::Running),
+            "a failed stop must revert to Running, not stay Stopped or Stopping — \
+             a waiting login must not be stuck behind a stop that already failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_idle_shutdown_does_not_abort_in_flight_stop() {
+        let state = test_state();
+        state.set_state(ServerState::Stopping);
+
+        // Simulate a stop already in flight: install a timer handle for a
+        // long-running task, then confirm cancel_idle_shutdown leaves it
+        // alone (does not abort) while state is Stopping.
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        *state.idle_timer.lock().await = Some(handle);
+
+        state.cancel_idle_shutdown().await;
+
+        let guard = state.idle_timer.lock().await;
+        assert!(
+            guard.as_ref().is_some_and(|h| !h.is_finished()),
+            "cancel_idle_shutdown must not abort a stop already in progress"
         );
     }
 }

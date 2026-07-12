@@ -67,6 +67,7 @@ where
         ServerState::Stopped => base_motd.clone(),
         ServerState::Starting => format!("{base_motd} §7(starting...)"),
         ServerState::Running => base_motd.clone(),
+        ServerState::Stopping => format!("{base_motd} §7(stopping...)"),
     };
 
     let mut effective_status = state.config.status.clone();
@@ -120,6 +121,21 @@ where
     // so concurrent logins don't both spawn docker.start().
     {
         let _guard = state.start_mutex.lock().await;
+
+        // An idle-triggered stop may already be in flight (cancel_idle_shutdown
+        // deliberately doesn't abort it — see its doc comment). Forwarding
+        // this login into a container that's mid-shutdown would break it, so
+        // wait for the stop to resolve (to Stopped, or back to Running if the
+        // stop failed) before deciding whether to start.
+        if matches!(state.current_state(), ServerState::Stopping) {
+            let mut state_rx = state.subscribe();
+            while matches!(state.current_state(), ServerState::Stopping) {
+                if state_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+
         if matches!(state.current_state(), ServerState::Stopped) {
             state.set_state(ServerState::Starting);
             let state_clone = state.clone();
@@ -159,6 +175,21 @@ where
     let mut keepalive_id = 0i32;
     let target = format!("{}:{}", state.config.target.host, state.config.target.port);
     let mut state_rx = state.subscribe();
+
+    // docker.start() runs in a separately spawned task and may already have
+    // failed (set_state(Stopped)) before this task reaches subscribe() above
+    // — watch::Receiver::changed() only fires on transitions *after*
+    // subscribing, so a failure that already happened would otherwise never
+    // wake the select loop below and this would wait out the full deadline.
+    // Check the snapshot captured at subscribe time before entering the loop.
+    if matches!(*state_rx.borrow_and_update(), ServerState::Stopped) {
+        let _ = writer
+            .write_all(&encode_login_disconnect(
+                "Server failed to start. Contact admin.",
+            ))
+            .await;
+        anyhow::bail!("Server start failed");
+    }
 
     loop {
         if std::time::Instant::now() >= deadline {
@@ -208,7 +239,11 @@ where
                                     .await;
                                 anyhow::bail!("Server start failed");
                             }
-                            ServerState::Starting => {}
+                            // Not expected while this login already forced
+                            // Starting via the start_mutex-guarded block
+                            // above, but exhaustive match requires handling
+                            // it: treat like Starting, keep waiting.
+                            ServerState::Starting | ServerState::Stopping => {}
                         }
                     }
                     Err(_) => anyhow::bail!("State channel closed"),
@@ -404,6 +439,44 @@ mod tests {
         assert!(
             matches!(read_result, Ok(Ok(n)) if n > 0),
             "client should receive a disconnect packet, not silence"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_server_bails_immediately_when_already_stopped_before_subscribe() {
+        // Regression test for the subscribe-timing race: docker.start() runs
+        // in a separately spawned task and can fail (set_state(Stopped))
+        // before this function ever calls state.subscribe(). Unlike
+        // test_wait_for_server_bails_immediately_when_state_goes_stopped
+        // above (which flips state *after* wait_for_server has started and
+        // subscribed), this sets Stopped up front — watch::Receiver::changed()
+        // never fires for a transition that already happened before
+        // subscribing, so this only passes if wait_for_server checks the
+        // initial snapshot instead of relying solely on the select loop.
+        let state = test_state(120);
+        state.set_state(ServerState::Stopped);
+
+        let (mut client_side, server_side) = tokio::io::duplex(4096);
+        let (mut server_reader, mut server_writer) = tokio::io::split(server_side);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            wait_for_server(&mut server_reader, &mut server_writer, &state),
+        )
+        .await
+        .expect("must bail immediately, not wait for a state change that will never come");
+
+        assert!(result.is_err());
+
+        let mut buf = [0u8; 1];
+        let read_result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::io::AsyncReadExt::read(&mut client_side, &mut buf),
+        )
+        .await;
+        assert!(
+            matches!(read_result, Ok(Ok(n)) if n > 0),
+            "client should receive a disconnect packet"
         );
     }
 
