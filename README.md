@@ -13,6 +13,7 @@
   <a href="https://github.com/samuelloranger/redoxide/actions/workflows/ci.yml"><img src="https://github.com/samuelloranger/redoxide/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/samuelloranger/redoxide/actions/workflows/docker.yml"><img src="https://github.com/samuelloranger/redoxide/actions/workflows/docker.yml/badge.svg" alt="Docker build" /></a>
   <a href="https://github.com/samuelloranger/redoxide/pkgs/container/redoxide"><img src="https://img.shields.io/badge/ghcr.io-redoxide-2496ED?logo=docker&logoColor=white" alt="Container image" /></a>
+  <a href="https://buymeacoffee.com/samlo122"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee" /></a>
 </p>
 
 A lightweight Minecraft reverse proxy written in Rust that starts your server on demand when a player connects, and shuts it down automatically when everyone leaves.
