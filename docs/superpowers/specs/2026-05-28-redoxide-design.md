@@ -150,7 +150,7 @@ The container must exist in a stopped state (created via `docker-compose up --no
 - Build multi-platform: `linux/amd64`, `linux/arm64`
 - Push to `ghcr.io/samuelloranger/redoxide:latest` and `ghcr.io/samuelloranger/redoxide:<sha>`
 
-**Production docker-compose** (in `servers/minecraft/docker-compose.yml`):
+**Production docker-compose** (in the host-side Minecraft stack directory, outside this repo):
 ```yaml
 infrared:  # rename to redoxide
   image: ghcr.io/samuelloranger/redoxide:latest
