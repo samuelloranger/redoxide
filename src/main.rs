@@ -36,8 +36,9 @@ async fn main() -> anyhow::Result<()> {
     let shared = state::SharedState::new(config.clone(), docker);
     shared.set_state(initial_state.clone());
 
-    // If already running at startup, detect version immediately
+    // If already running at startup, adopt it and detect version immediately
     if matches!(initial_state, state::ServerState::Running) {
+        shared.adopt_running().await;
         let target = format!("{}:{}", config.target.host, config.target.port);
         match proxy::probe_server_version(&target).await {
             Some((protocol, version)) => shared.update_version_info(protocol, version).await,
@@ -68,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
                             tracing::info!(
                                 "Container started externally — updating state to Running"
                             );
-                            sync_state.set_state(state::ServerState::Running);
+                            sync_state.adopt_running().await;
                             let target = format!(
                                 "{}:{}",
                                 sync_state.config.target.host, sync_state.config.target.port

@@ -72,6 +72,8 @@ impl SharedState {
         self.player_count.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    // `try_update`, the suggested replacement, is newer than the 1.88 MSRV.
+    #[allow(deprecated)]
     fn remove_player(&self) -> usize {
         self.player_count
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
@@ -137,6 +139,17 @@ impl SharedState {
         self.add_player();
         SessionGuard {
             state: self.clone(),
+        }
+    }
+
+    /// Marks a container redoxide didn't start itself (running at startup, or
+    /// started outside redoxide) as `Running`. With nobody connected, no
+    /// session will ever end to arm the idle timer, so arm it here — otherwise
+    /// the container runs until someone joins and leaves.
+    pub async fn adopt_running(self: &Arc<Self>) {
+        self.set_state(ServerState::Running);
+        if self.player_count() == 0 {
+            self.schedule_idle_shutdown().await;
         }
     }
 
@@ -279,6 +292,31 @@ mod tests {
             "a failed stop must revert to Running, not stay Stopped or Stopping — \
              a waiting login must not be stuck behind a stop that already failed"
         );
+    }
+
+    #[tokio::test]
+    async fn test_adopt_running_arms_idle_shutdown_when_nobody_is_connected() {
+        let state = test_state();
+
+        state.adopt_running().await;
+
+        assert!(matches!(state.current_state(), ServerState::Running));
+        assert!(
+            state.idle_timer.lock().await.is_some(),
+            "a container adopted with no players must get an idle timer, \
+             or it runs until someone joins and leaves"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_adopt_running_leaves_timer_unarmed_while_a_player_is_connected() {
+        let state = test_state();
+        let _session = state.begin_session();
+
+        state.adopt_running().await;
+
+        assert!(matches!(state.current_state(), ServerState::Running));
+        assert!(state.idle_timer.lock().await.is_none());
     }
 
     #[tokio::test]
