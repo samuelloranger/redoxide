@@ -26,18 +26,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let docker = docker::DockerClient::new(config.docker.container_name.clone())?;
-    let initial_state = if docker.is_running().await.unwrap_or(false) {
-        info!("Container already running at startup");
-        state::ServerState::Running
-    } else {
-        state::ServerState::Stopped
-    };
-
+    let running_at_startup = docker.is_running().await.unwrap_or(false);
     let shared = state::SharedState::new(config.clone(), docker);
-    shared.set_state(initial_state.clone());
 
     // If already running at startup, adopt it and detect version immediately
-    if matches!(initial_state, state::ServerState::Running) {
+    if running_at_startup {
+        info!("Container already running at startup");
         shared.adopt_running().await;
         let target = format!("{}:{}", config.target.host, config.target.port);
         match proxy::probe_server_version(&target).await {

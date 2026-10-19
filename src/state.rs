@@ -147,8 +147,15 @@ impl SharedState {
     /// session will ever end to arm the idle timer, so arm it here — otherwise
     /// the container runs until someone joins and leaves.
     pub async fn adopt_running(self: &Arc<Self>) {
-        self.set_state(ServerState::Running);
-        if self.player_count() == 0 {
+        // Only from Stopped: a login may have moved to Starting since the caller looked.
+        let adopted = self.server_tx.send_if_modified(|s| {
+            let stopped = matches!(s, ServerState::Stopped);
+            if stopped {
+                *s = ServerState::Running;
+            }
+            stopped
+        });
+        if adopted && self.player_count() == 0 {
             self.schedule_idle_shutdown().await;
         }
     }
@@ -316,6 +323,20 @@ mod tests {
         state.adopt_running().await;
 
         assert!(matches!(state.current_state(), ServerState::Running));
+        assert!(state.idle_timer.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_adopt_running_does_not_overwrite_a_start_in_progress() {
+        let state = test_state();
+        state.set_state(ServerState::Starting);
+
+        state.adopt_running().await;
+
+        assert!(
+            matches!(state.current_state(), ServerState::Starting),
+            "adopting must not mark a booting server Running before it is ready"
+        );
         assert!(state.idle_timer.lock().await.is_none());
     }
 
