@@ -170,7 +170,7 @@ impl Default for WaitTiming {
     fn default() -> Self {
         Self {
             probe_every: Duration::from_secs(2),
-            probe_timeout: Duration::from_secs(2),
+            probe_timeout: Duration::from_secs(5),
             keepalive_every: Duration::from_secs(10),
             answer_timeout: Duration::from_secs(5),
         }
@@ -305,6 +305,8 @@ where
 
     // A keepalive sent just before the backend came up is still in flight:
     // consume its answer here so forward() starts the client stream cleanly.
+    // A client that never answers is dropped rather than forwarded: a late
+    // answer would reach the server and get the login kicked anyway.
     while unanswered > 0 {
         let (pkt, _) = timeout(timing.answer_timeout, read_packet(reader))
             .await
