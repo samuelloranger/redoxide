@@ -155,6 +155,28 @@ where
     forward(reader, writer, handshake_raw, login_raw, state).await
 }
 
+/// Intervals used while a login waits for the backend. Only tests override
+/// the defaults, to keep them fast.
+struct WaitTiming {
+    probe_every: Duration,
+    probe_timeout: Duration,
+    keepalive_every: Duration,
+    /// How long to wait for the client to answer outstanding keepalives once
+    /// the backend is ready.
+    answer_timeout: Duration,
+}
+
+impl Default for WaitTiming {
+    fn default() -> Self {
+        Self {
+            probe_every: Duration::from_secs(2),
+            probe_timeout: Duration::from_secs(5),
+            keepalive_every: Duration::from_secs(10),
+            answer_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
 async fn wait_for_server<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -164,15 +186,32 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    wait_for_server_with(reader, writer, state, &WaitTiming::default()).await
+}
+
+async fn wait_for_server_with<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    state: &Arc<SharedState>,
+    timing: &WaitTiming,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     use tokio::time::interval;
 
     let deadline =
         std::time::Instant::now() + Duration::from_secs(state.config.docker.startup_timeout_secs);
-    let mut probe_interval = interval(Duration::from_secs(2));
-    let mut keepalive_interval = interval(Duration::from_secs(10));
-    // Fire first keepalive after 10s, not immediately
+    let mut probe_interval = interval(timing.probe_every);
+    let mut keepalive_interval = interval(timing.keepalive_every);
+    // Fire first keepalive after one period, not immediately
     keepalive_interval.tick().await;
     let mut keepalive_id = 0i32;
+    // Keepalives the client hasn't answered yet. Each answer must be consumed
+    // here: forwarded to the real server, an answer to a query it never sent
+    // gets the login kicked ("Unexpected custom data from client").
+    let mut unanswered = 0usize;
     let target = format!("{}:{}", state.config.target.host, state.config.target.port);
     let mut state_rx = state.subscribe();
 
@@ -203,18 +242,16 @@ where
 
         tokio::select! {
             _ = probe_interval.tick() => {
-                if TcpStream::connect(&target).await.is_ok() {
+                // An open port isn't readiness: the server binds it seconds
+                // before it serves anything, and a login forwarded into that
+                // window is dropped without a word. Wait for a status reply.
+                if let Ok(Some((protocol, version))) =
+                    timeout(timing.probe_timeout, probe_server_version(&target)).await
+                {
+                    state.update_version_info(protocol, version).await;
                     state.set_state(ServerState::Running);
                     tracing::info!("Server is up, forwarding connection");
-                    // Probe version info in background — don't block the waiting player
-                    let state_clone = state.clone();
-                    let target_clone = target.clone();
-                    tokio::spawn(async move {
-                        if let Some((protocol, version)) = probe_server_version(&target_clone).await {
-                            state_clone.update_version_info(protocol, version).await;
-                        }
-                    });
-                    return Ok(());
+                    break;
                 }
             }
             _ = keepalive_interval.tick() => {
@@ -222,6 +259,7 @@ where
                 writer.write_all(&packet).await?;
                 tracing::trace!(id = keepalive_id, "Sent keepalive");
                 keepalive_id += 1;
+                unanswered += 1;
             }
             changed = state_rx.changed() => {
                 match changed {
@@ -230,7 +268,7 @@ where
                         // held `watch::Ref` isn't `Send` across an `.await`.
                         let current = state_rx.borrow().clone();
                         match current {
-                            ServerState::Running => return Ok(()),
+                            ServerState::Running => break,
                             ServerState::Stopped => {
                                 let _ = writer
                                     .write_all(&encode_login_disconnect(
@@ -253,13 +291,38 @@ where
             // don't accumulate and get forwarded to the real server after the wait.
             result = read_packet(reader) => {
                 match result {
-                    Ok((pkt, _)) => tracing::trace!(id = pkt.id, "Discarded client packet during wait"),
+                    Ok((pkt, _)) => {
+                        if pkt.id == LOGIN_PLUGIN_RESPONSE {
+                            unanswered = unanswered.saturating_sub(1);
+                        }
+                        tracing::trace!(id = pkt.id, "Discarded client packet during wait");
+                    }
                     Err(_) => anyhow::bail!("Client disconnected while waiting for server"),
                 }
             }
         }
     }
+
+    // A keepalive sent just before the backend came up is still in flight:
+    // consume its answer here so forward() starts the client stream cleanly.
+    // A client that never answers is dropped rather than forwarded: a late
+    // answer would reach the server and get the login kicked anyway.
+    while unanswered > 0 {
+        let (pkt, _) = timeout(timing.answer_timeout, read_packet(reader))
+            .await
+            .context("timed out waiting for keepalive answer")?
+            .context("client disconnected while answering keepalive")?;
+        if pkt.id == LOGIN_PLUGIN_RESPONSE {
+            unanswered -= 1;
+        }
+        tracing::trace!(id = pkt.id, "Discarded client packet before forwarding");
+    }
+
+    Ok(())
 }
+
+/// Serverbound Login Plugin Response (answer to redoxide's keepalive query).
+const LOGIN_PLUGIN_RESPONSE: i32 = 0x02;
 
 async fn forward<R, W>(
     mut client_reader: R,
@@ -477,6 +540,139 @@ mod tests {
         assert!(
             matches!(read_result, Ok(Ok(n)) if n > 0),
             "client should receive a disconnect packet"
+        );
+    }
+
+    /// Backend whose port accepts connections at once but only answers status
+    /// pings from `serving_after` on, like a server still loading its world.
+    async fn spawn_slow_backend(serving_after: Duration) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving_at = std::time::Instant::now() + serving_after;
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if std::time::Instant::now() < serving_at {
+                    drop(socket);
+                    continue;
+                }
+                tokio::spawn(async move {
+                    read_packet(&mut socket).await.unwrap();
+                    read_packet(&mut socket).await.unwrap();
+                    let status = StatusConfig {
+                        protocol_version: 777,
+                        max_players: 20,
+                        online_motd: "test".to_string(),
+                        version_name: "26.3".to_string(),
+                        server_properties: None,
+                    };
+                    socket
+                        .write_all(&encode_status_response("test", &status, 0))
+                        .await
+                        .unwrap();
+                });
+            }
+        });
+        addr
+    }
+
+    fn state_for_backend(addr: std::net::SocketAddr) -> Arc<SharedState> {
+        let mut config = test_config(120);
+        config.target.host = addr.ip().to_string();
+        config.target.port = addr.port();
+        let docker = DockerClient::new("redoxide-test-nonexistent-container".to_string()).unwrap();
+        let state = SharedState::new(config, docker);
+        state.set_state(ServerState::Starting);
+        state
+    }
+
+    fn fast_timing() -> WaitTiming {
+        WaitTiming {
+            probe_every: Duration::from_millis(50),
+            probe_timeout: Duration::from_millis(500),
+            keepalive_every: Duration::from_millis(100),
+            answer_timeout: Duration::from_secs(2),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_server_needs_a_status_reply_not_just_an_open_port() {
+        let addr = spawn_slow_backend(Duration::from_millis(300)).await;
+        let state = state_for_backend(addr);
+
+        let (_client_side, server_side) = tokio::io::duplex(4096);
+        let (mut server_reader, mut server_writer) = tokio::io::split(server_side);
+
+        // No keepalives: this client never answers them.
+        let timing = WaitTiming {
+            keepalive_every: Duration::from_secs(60),
+            ..fast_timing()
+        };
+        let started = std::time::Instant::now();
+        wait_for_server_with(&mut server_reader, &mut server_writer, &state, &timing)
+            .await
+            .unwrap();
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "returned after {:?}, before the backend served status",
+            started.elapsed()
+        );
+        assert_eq!(state.protocol_version(), 777);
+        assert_eq!(state.version_name().await, "26.3");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_server_consumes_keepalive_answers_still_in_flight() {
+        // Keepalive goes out at 100ms, the backend serves from 150ms, and the
+        // client answers 200ms after each query. Readiness is seen while the
+        // answer is still in flight; returning then would hand the answer to
+        // forward(), and the real server kicks a login that sends one.
+        let addr = spawn_slow_backend(Duration::from_millis(150)).await;
+        let state = state_for_backend(addr);
+
+        let (client_side, server_side) = tokio::io::duplex(4096);
+        let (mut server_reader, mut server_writer) = tokio::io::split(server_side);
+        let (mut client_reader, mut client_writer) = tokio::io::split(client_side);
+
+        tokio::spawn(async move {
+            while let Ok((query, _)) = read_packet(&mut client_reader).await {
+                assert_eq!(query.id, 0x04);
+                let message_id = crate::protocol::varint::read_varint_sync(
+                    &mut std::io::Cursor::new(&query.data),
+                )
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let mut answer = encode_varint(message_id);
+                answer.push(0); // not understood, no payload
+                if client_writer
+                    .write_all(&encode_packet(LOGIN_PLUGIN_RESPONSE, &answer))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        wait_for_server_with(
+            &mut server_reader,
+            &mut server_writer,
+            &state,
+            &fast_timing(),
+        )
+        .await
+        .unwrap();
+
+        let mut leftover = [0u8; 1];
+        let read = tokio::time::timeout(
+            Duration::from_millis(400),
+            tokio::io::AsyncReadExt::read(&mut server_reader, &mut leftover),
+        )
+        .await;
+        assert!(
+            read.is_err(),
+            "a keepalive answer was left for forward() to pass to the server"
         );
     }
 
