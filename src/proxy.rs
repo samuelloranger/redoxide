@@ -3,9 +3,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
-use crate::protocol::handshake::{parse_handshake, parse_login_start, Handshake};
+use crate::protocol::handshake::{Handshake, parse_handshake, parse_login_start};
 use crate::protocol::packet::{encode_packet, encode_string, read_packet};
 use crate::protocol::varint::encode_varint;
 use crate::state::{ServerState, SharedState};

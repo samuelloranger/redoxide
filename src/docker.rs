@@ -1,7 +1,7 @@
+use bollard::Docker;
 use bollard::query_parameters::{
     InspectContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::Docker;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -75,7 +75,7 @@ impl DockerClient {
 const MAX_RCON_PACKET_LEN: usize = 4096 + 10;
 
 async fn rcon_stop(cfg: &RconConfig) -> anyhow::Result<()> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     timeout(Duration::from_secs(10), async {
         let addr = format!("{}:{}", cfg.host, cfg.port);
