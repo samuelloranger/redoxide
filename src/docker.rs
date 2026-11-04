@@ -22,6 +22,20 @@ impl DockerClient {
         })
     }
 
+    /// Lowers the client's API version to the daemon's when the daemon is older.
+    /// bollard sends its built-in default version otherwise, which an older daemon
+    /// rejects as "client version too new". Keeps the default if the daemon can't be
+    /// reached, so the error surfaces on the first real request instead.
+    pub async fn negotiate_version(self) -> Self {
+        match self.client.clone().negotiate_version().await {
+            Ok(client) => Self { client, ..self },
+            Err(err) => {
+                tracing::warn!(error = %err, "Docker API version negotiation failed, using the default");
+                self
+            }
+        }
+    }
+
     pub async fn is_running(&self) -> anyhow::Result<bool> {
         let info = self
             .client
