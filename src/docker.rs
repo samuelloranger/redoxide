@@ -1,4 +1,6 @@
-use bollard::container::{InspectContainerOptions, StartContainerOptions, StopContainerOptions};
+use bollard::query_parameters::{
+    InspectContainerOptions, StartContainerOptions, StopContainerOptions,
+};
 use bollard::Docker;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -30,7 +32,7 @@ impl DockerClient {
 
     pub async fn start(&self) -> anyhow::Result<()> {
         self.client
-            .start_container(&self.container_name, None::<StartContainerOptions<String>>)
+            .start_container(&self.container_name, None::<StartContainerOptions>)
             .await?;
         tracing::info!(container = %self.container_name, "Container started");
         Ok(())

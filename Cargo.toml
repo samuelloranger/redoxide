@@ -10,10 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
-bollard = "0.18"
+bollard = "0.21"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1.0.103"
+anyhow = "1.0.104"
