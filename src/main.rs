@@ -25,7 +25,9 @@ async fn main() -> anyhow::Result<()> {
         "redoxide starting"
     );
 
-    let docker = docker::DockerClient::new(config.docker.container_name.clone())?;
+    let docker = docker::DockerClient::new(config.docker.container_name.clone())?
+        .negotiate_version()
+        .await;
     let running_at_startup = docker.is_running().await.unwrap_or(false);
     let shared = state::SharedState::new(config.clone(), docker);
 

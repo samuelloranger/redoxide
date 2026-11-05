@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::Config;

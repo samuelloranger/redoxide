@@ -1,4 +1,4 @@
-FROM rust:alpine AS builder
+FROM rust:1.99-alpine AS builder
 
 RUN apk add --no-cache musl-dev
 
@@ -12,7 +12,7 @@ COPY src ./src
 RUN touch src/main.rs && \
     cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 COPY --from=builder /build/target/release/redoxide /redoxide
 COPY config.example.toml /config.example.toml
