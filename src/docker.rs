@@ -1,5 +1,7 @@
-use bollard::container::{InspectContainerOptions, StartContainerOptions, StopContainerOptions};
 use bollard::Docker;
+use bollard::query_parameters::{
+    InspectContainerOptions, StartContainerOptions, StopContainerOptions,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -20,6 +22,20 @@ impl DockerClient {
         })
     }
 
+    /// Lowers the client's API version to the daemon's when the daemon is older.
+    /// bollard sends its built-in default version otherwise, which an older daemon
+    /// rejects as "client version too new". Keeps the default if the daemon can't be
+    /// reached, so the error surfaces on the first real request instead.
+    pub async fn negotiate_version(self) -> Self {
+        match self.client.clone().negotiate_version().await {
+            Ok(client) => Self { client, ..self },
+            Err(err) => {
+                tracing::warn!(error = %err, "Docker API version negotiation failed, using the default");
+                self
+            }
+        }
+    }
+
     pub async fn is_running(&self) -> anyhow::Result<bool> {
         let info = self
             .client
@@ -30,7 +46,7 @@ impl DockerClient {
 
     pub async fn start(&self) -> anyhow::Result<()> {
         self.client
-            .start_container(&self.container_name, None::<StartContainerOptions<String>>)
+            .start_container(&self.container_name, None::<StartContainerOptions>)
             .await?;
         tracing::info!(container = %self.container_name, "Container started");
         Ok(())
@@ -73,7 +89,7 @@ impl DockerClient {
 const MAX_RCON_PACKET_LEN: usize = 4096 + 10;
 
 async fn rcon_stop(cfg: &RconConfig) -> anyhow::Result<()> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     timeout(Duration::from_secs(10), async {
         let addr = format!("{}:{}", cfg.host, cfg.port);
