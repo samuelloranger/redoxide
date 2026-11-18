@@ -172,7 +172,7 @@ Requires Rust 1.88+ (enforced in CI).
 
 ## Docker image
 
-Pre-built images (`linux/amd64`) are published to GitHub Container Registry on every version tag:
+Pre-built multi-arch images (`linux/amd64` and `linux/arm64`) are published to GitHub Container Registry on every version tag:
 
 ```
 ghcr.io/samuelloranger/redoxide:latest
