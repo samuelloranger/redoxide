@@ -1,0 +1,27 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  real-container:
+    name: End-to-end against a real Minecraft container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REDOXIDE_REAL_CONTAINER_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The test builds the repo Docker image itself, stands up a stopped
+      # itzg/minecraft-server container, and drives the full boot → login →
+      # idle → shutdown lifecycle through the published proxy port.
+      - name: Run the real-container integration test
+        run: cargo test --test real_container -- --nocapture

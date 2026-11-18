@@ -1,10 +1,4 @@
-mod config;
-mod docker;
-mod protocol;
-mod proxy;
-mod state;
-mod status;
-mod version_cache;
+use redoxide::{config, docker, proxy, state};
 
 use tokio::net::TcpListener;
 use tracing::info;
