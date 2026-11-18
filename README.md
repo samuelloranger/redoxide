@@ -170,6 +170,21 @@ cargo build --release
 
 Requires Rust 1.88+ (enforced in CI).
 
+## Testing
+
+```bash
+cargo test   # unit tests, no Docker needed
+```
+
+CI additionally runs one end-to-end integration test against a real
+`itzg/minecraft-server` container: status while stopped, a login that boots
+the container, a real Login Success through the forward path, idle shutdown,
+and status after the stop. It needs Docker and is skipped by default:
+
+```bash
+REDOXIDE_REAL_CONTAINER_IT=1 cargo test --test real_container -- --nocapture
+```
+
 ## Docker image
 
 Pre-built multi-arch images (`linux/amd64` and `linux/arm64`) are published to GitHub Container Registry on every version tag:

@@ -17,3 +17,8 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0.104"
+
+[dev-dependencies]
+# real-container integration test only: decode Minecraft's zlib-compressed
+# packet framing. Pure-Rust backend, no effect on the shipped binary.
+flate2 = "1"
